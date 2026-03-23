@@ -1,0 +1,4 @@
+customer_id,customer_name,segment,city,state,source_system
+1001,ABC Corp,Corporate,New York,NY,SRC_A
+1002,XYZ Health,SMB,Boston,MA,SRC_A
+1003,Prime Services,Corporate,Chicago,IL,SRC_A

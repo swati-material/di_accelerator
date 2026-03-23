@@ -1,0 +1,4 @@
+source_status,standard_status
+Open,ACTIVE
+Closed,COMPLETED
+InProgress,ACTIVE

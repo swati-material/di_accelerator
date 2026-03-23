@@ -1,0 +1,6 @@
+activity_id,customer_id,activity_type,activity_date,status,amount
+1,1001,Case_Open,2025-01-10,Open,2500
+2,1002,Case_Close,2025-01-12,Closed,1200
+3,2001,Case_Open,2025-01-15,Open,5000
+4,2002,Case_Review,2025-01-18,InProgress,800
+5,1003,Case_Close,2025-01-20,Closed,3000

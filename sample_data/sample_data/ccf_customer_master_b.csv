@@ -1,0 +1,4 @@
+customer_id,customer_name,segment,city,state,source_system
+2001,Delta Group,Corporate,San Francisco,CA,SRC_B
+2002,Omega Retail,SMB,Seattle,WA,SRC_B
+2003,Northwind Care,Enterprise,Austin,TX,SRC_B
