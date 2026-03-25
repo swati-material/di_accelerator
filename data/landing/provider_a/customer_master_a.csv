@@ -1,0 +1,11 @@
+customer_id,customer_name,email,region,signup_date
+C001,Alice Nguyen,alice.nguyen@email.com,North America,2022-03-15
+C002,Bob Patel,bob.patel@techcorp.com,EMEA,2021-07-22
+C003,Clara Schmidt,clara.s@eurohub.de,EMEA,2023-01-10
+C004,David Okonkwo,d.okonkwo@africamail.ng,APAC,2022-11-05
+C005,Emily Carter,emily.carter@usco.com,North America,2020-06-30
+C006,Farhan Ali,farhan.ali@menatech.ae,MENA,2023-04-18
+C007,Grace Liu,grace.liu@hkbiz.hk,APAC,2021-09-27
+C008,Hiro Tanaka,h.tanaka@jpmail.jp,APAC,2022-08-14
+C009,Isabel Ferreira,isabel.f@brasil.br,LATAM,2023-02-03
+C010,James Obert,james.obert@canmail.ca,North America,2021-12-19

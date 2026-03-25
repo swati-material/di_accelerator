@@ -10,11 +10,11 @@ from contextlib import contextmanager
 
 # ── Connection config: read from environment variables ──────
 DB_CONFIG = {
-    "host":     os.getenv("META_DB_HOST",     "your-rds-endpoint.rds.amazonaws.com"),
-    "port":     int(os.getenv("META_DB_PORT", "5432")),
-    "dbname":   os.getenv("META_DB_NAME",     "metadata_store"),
-    "user":     os.getenv("META_DB_USER",     "etl_user"),
-    "password": os.getenv("META_DB_PASSWORD", ""),   # always use env var, never hardcode
+    "host":     os.getenv("DB_HOST", "localhost"),
+    "port":     int(os.getenv("DB_PORT", "5432")),
+    "dbname":   os.getenv("DB_NAME", "metadata_store"),
+    "user":     os.getenv("DB_USER","swati.dubey"),
+    "password": os.getenv("DB_PASSWORD","postgres"),   # always use env var, never hardcode
 }
 
 

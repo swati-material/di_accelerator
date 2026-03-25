@@ -1,118 +1,109 @@
 # ============================================================
 # config_loader.py
-# Loads ETL job configuration from the Metadata Store DB.
-# Replaces the hardcoded etl_job_config.py.
+# Thin query layer over config.* tables.
+# Returns plain dicts — no business logic here.
+#
+# Table mapping (matches 01_create_tables.sql exactly):
+#   config.job        — master job registry (schedule merged in)
+#   config.job_step   — ordered step definitions
+#   config.step_param — runtime parameters per step
 # ============================================================
 
 from db_connection import get_cursor
 
 
-def get_job_config(job_id: int) -> dict:
-    """
-    Load the master job record from ETL_JOB_CONFIG.
+def get_all_active_jobs() -> list[dict]:
+    """Fetch all active jobs from config.job, ordered by job_id."""
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            SELECT job_id, job_name, job_description, source_system,
+                   client_id, cron_expression, frequency, timezone,
+                   schedule_type, next_run, last_run,
+                   is_active, created_by, created_date
+            FROM   config.job
+            WHERE  is_active = TRUE
+            ORDER  BY job_id
+            """
+        )
+        return [dict(r) for r in cur.fetchall()]
 
-    Returns a dict with job details, or raises ValueError if not found / inactive.
+
+def get_job(job_id: int) -> dict:
+    """
+    Fetch a single active job by ID.
+    Raises ValueError if not found or inactive.
     """
     with get_cursor() as cur:
         cur.execute(
             """
-            SELECT job_id, client_id, job_name, job_description,
-                   source_system, secret_scope, secret_key_name,
-                   status, is_active, version
-            FROM   etl_job_config
-            WHERE  job_id   = %s
-              AND  is_active = 'Y'
-              AND  status    = 'ACTIVE'
+            SELECT job_id, job_name, job_description, source_system,
+                   client_id, cron_expression, frequency, timezone,
+                   schedule_type, next_run, last_run,
+                   is_active, created_by, created_date
+            FROM   config.job
+            WHERE  job_id    = %s
+              AND  is_active = TRUE
             """,
-            (job_id,)
+            (job_id,),
         )
         row = cur.fetchone()
 
     if not row:
-        raise ValueError(f"[ConfigLoader] No active job found for JOB_ID={job_id}")
+        raise ValueError(f"No active job found for job_id={job_id}")
 
-    print(f"[ConfigLoader] Loaded job: {row['job_name']} (ID={job_id})")
+    print(f"[CONFIG] Loaded job: {row['job_name']} (job_id={job_id})")
     return dict(row)
 
 
-def get_job_params(job_id: int) -> list[dict]:
+def get_job_steps(job_id: int) -> list[dict]:
     """
-    Load all active execution parameters for a job, ordered by SEQUENCE.
-
-    Returns a list of dicts — one per RESOURCE_GROUP / processing step.
+    Fetch all active steps for a job from config.job_step,
+    ordered by sequence ascending.
     """
     with get_cursor() as cur:
         cur.execute(
             """
-            SELECT param_id, job_id, resource_group, param_name,
-                   fields, filters, delta_to_pull, param_type,
-                   masked_fields, sequence, validation_rules,
-                   dependencies, description
-            FROM   etl_param_config
+            SELECT step_id, job_id, step_name, step_type,
+                   step_action, source_path, target_path,
+                   sequence, is_active
+            FROM   config.job_step
             WHERE  job_id    = %s
-              AND  is_active = 'Y'
+              AND  is_active = TRUE
             ORDER  BY sequence ASC
             """,
-            (job_id,)
+            (job_id,),
         )
         rows = cur.fetchall()
 
-    if not rows:
-        raise ValueError(f"[ConfigLoader] No active params found for JOB_ID={job_id}")
-
-    params = [dict(r) for r in rows]
-    print(f"[ConfigLoader] Loaded {len(params)} param(s) for JOB_ID={job_id}")
-    return params
+    steps = [dict(r) for r in rows]
+    print(f"[CONFIG] Loaded {len(steps)} step(s) for job_id={job_id}")
+    return steps
 
 
-def get_job_schedule(job_id: int) -> dict | None:
+def get_step_params(step_id: int) -> list[dict]:
     """
-    Load the active schedule for a job.
-
-    Returns a dict, or None if no schedule is configured.
+    Fetch all active params for a step from config.step_param.
+    Returns an empty list when none are defined.
     """
     with get_cursor() as cur:
         cur.execute(
             """
-            SELECT schedule_id, job_id, cron_expression,
-                   frequency, timezone, next_run, last_run, schedule_type
-            FROM   etl_job_schedule
-            WHERE  job_id    = %s
-              AND  is_active = 'Y'
-            LIMIT  1
+            SELECT param_id, step_id, param_name, param_value,
+                   param_data_type, resource_group,
+                   fields, filters, delta_to_pull
+            FROM   config.step_param
+            WHERE  step_id    = %s
+              AND  is_active  = TRUE
             """,
-            (job_id,)
+            (step_id,),
         )
-        row = cur.fetchone()
-
-    if row:
-        print(f"[ConfigLoader] Schedule: {row['cron_expression']} ({row['frequency']})")
-        return dict(row)
-
-    print(f"[ConfigLoader] No schedule found for JOB_ID={job_id}")
-    return None
-
-
-def load_full_config(job_id: int) -> dict:
-    """
-    Convenience method — loads job + params + schedule in one call.
-
-    Returns:
-        {
-            "job":      { ...ETL_JOB_CONFIG fields... },
-            "params":   [ { ...ETL_PARAM_CONFIG fields... }, ... ],
-            "schedule": { ...ETL_JOB_SCHEDULE fields... } or None
-        }
-    """
-    return {
-        "job":      get_job_config(job_id),
-        "params":   get_job_params(job_id),
-        "schedule": get_job_schedule(job_id),
-    }
+        return [dict(r) for r in cur.fetchall()]
 
 
 # ── Quick test ───────────────────────────────────────────────
 if __name__ == "__main__":
     import json
-    config = load_full_config(job_id=1)
-    print(json.dumps(config, indent=2, default=str))
+
+    jobs = get_all_active_jobs()
+    print(json.dumps(jobs, indent=2, default=str))

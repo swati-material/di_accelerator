@@ -1,168 +1,179 @@
 # ============================================================
 # audit_manager.py
-# Writes run-time audit data to AUDIT_* tables.
-# Called by run_etl_job.py at the start, end, and on errors.
+# Writes runtime audit data to audit.* tables.
+#
+# Table mapping (matches 01_create_tables.sql exactly):
+#   audit.job_run   — one row per job execution
+#   audit.step_run  — one row per step execution
+#   audit.batch     — delta window detail per job run
+#   audit.log       — free-text log lines
+#   audit.error     — structured errors
+#
+# Each function commits immediately so audit data is always
+# persisted regardless of caller success or failure.
 # ============================================================
 
 from datetime import datetime, timezone
 from db_connection import get_cursor
 
 
-# ── Job-level audit ──────────────────────────────────────────
+# ── audit.job_run ────────────────────────────────────────────
 
-def start_job_audit(job_id: int, triggered_by: str = "Manual") -> int:
-    """
-    Insert a new AUDIT_ETL_JOB row at job start.
-    Returns job_audit_id to be passed to all subsequent audit calls.
-    """
+def start_job_run(job_id: int, triggered_by: str = "Manual") -> int:
+    """Insert a RUNNING row into audit.job_run. Returns job_run_id."""
     with get_cursor(commit=True) as cur:
         cur.execute(
             """
-            INSERT INTO audit_etl_job (job_id, run_status, start_time, triggered_by)
+            INSERT INTO audit.job_run (job_id, run_status, start_time, triggered_by)
             VALUES (%s, 'RUNNING', %s, %s)
-            RETURNING job_audit_id
+            RETURNING job_run_id
             """,
-            (job_id, datetime.now(timezone.utc), triggered_by)
+            (job_id, datetime.now(timezone.utc), triggered_by),
         )
-        job_audit_id = cur.fetchone()["job_audit_id"]
+        job_run_id = cur.fetchone()["job_run_id"]
+    print(f"[AUDIT] job_run started: job_run_id={job_run_id}")
+    return job_run_id
 
-    print(f"[Audit] Job audit started: JOB_AUDIT_ID={job_audit_id}")
-    return job_audit_id
 
-
-def end_job_audit(
-    job_audit_id: int,
+def end_job_run(
+    job_run_id: int,
     status: str,
     rows_processed: int = 0,
-    error_count: int = 0
+    error_count: int = 0,
 ) -> None:
-    """
-    Update AUDIT_ETL_JOB at job completion with final status and metrics.
-    status: 'SUCCESS' | 'FAILED' | 'PARTIAL'
-    """
+    """Update audit.job_run at job completion. status: SUCCESS | FAILED | PARTIAL"""
     now = datetime.now(timezone.utc)
     with get_cursor(commit=True) as cur:
         cur.execute(
             """
-            UPDATE audit_etl_job
+            UPDATE audit.job_run
                SET run_status      = %s,
                    end_time        = %s,
                    rows_processed  = %s,
                    error_count     = %s,
                    runtime_seconds = EXTRACT(EPOCH FROM (%s - start_time))::INT
-             WHERE job_audit_id = %s
+             WHERE job_run_id = %s
             """,
-            (status, now, rows_processed, error_count, now, job_audit_id)
+            (status, now, rows_processed, error_count, now, job_run_id),
         )
-    print(f"[Audit] Job audit closed: status={status}, rows={rows_processed}")
+    print(f"[AUDIT] job_run closed: status={status} rows={rows_processed} errors={error_count}")
 
 
-# ── Batch-level audit ────────────────────────────────────────
+# ── audit.step_run ───────────────────────────────────────────
 
-def start_batch_audit(job_audit_id: int, delta_to_pull: str) -> int:
-    """
-    Insert a new AUDIT_ETL_BATCH row at batch start.
-    Returns batch_id.
-    """
+def start_step_run(job_run_id: int, step_id: int) -> int:
+    """Insert a RUNNING row into audit.step_run. Returns step_run_id."""
     with get_cursor(commit=True) as cur:
         cur.execute(
             """
-            INSERT INTO audit_etl_batch (job_audit_id, delta_to_pull, batch_status, start_time)
+            INSERT INTO audit.step_run (job_run_id, step_id, step_status, start_time)
             VALUES (%s, %s, 'RUNNING', %s)
-            RETURNING batch_id
+            RETURNING step_run_id
             """,
-            (job_audit_id, delta_to_pull, datetime.now(timezone.utc))
+            (job_run_id, step_id, datetime.now(timezone.utc)),
         )
-        batch_id = cur.fetchone()["batch_id"]
-
-    print(f"[Audit] Batch started: BATCH_ID={batch_id}, delta={delta_to_pull}")
-    return batch_id
+        return cur.fetchone()["step_run_id"]
 
 
-def end_batch_audit(
-    batch_id: int,
+def end_step_run(
+    step_run_id: int,
     status: str,
-    rows_processed: int = 0,
-    rows_failed: int = 0
+    rows_in: int = 0,
+    rows_out: int = 0,
 ) -> None:
-    """Update AUDIT_ETL_BATCH at batch completion."""
+    """Update audit.step_run at step completion. status: SUCCESS | FAILED"""
     now = datetime.now(timezone.utc)
     with get_cursor(commit=True) as cur:
         cur.execute(
             """
-            UPDATE audit_etl_batch
-               SET batch_status    = %s,
+            UPDATE audit.step_run
+               SET step_status     = %s,
                    end_time        = %s,
-                   rows_processed  = %s,
-                   rows_failed     = %s,
+                   rows_in         = %s,
+                   rows_out        = %s,
                    runtime_seconds = EXTRACT(EPOCH FROM (%s - start_time))::INT
-             WHERE batch_id = %s
+             WHERE step_run_id = %s
             """,
-            (status, now, rows_processed, rows_failed, now, batch_id)
+            (status, now, rows_in, rows_out, now, step_run_id),
         )
-    print(f"[Audit] Batch closed: BATCH_ID={batch_id}, status={status}")
 
 
-# ── Logging ──────────────────────────────────────────────────
+# ── audit.batch ──────────────────────────────────────────────
 
-def log_message(
-    job_audit_id: int,
-    message: str,
-    level: str = "INFO",
-    stack_trace: str = None
-) -> None:
-    """
-    Write a log line to AUDIT_ETL_JOB_LOG.
-    level: 'INFO' | 'WARN' | 'ERROR' | 'DEBUG'
-    """
+def write_batch(
+    job_run_id: int,
+    delta_to_pull: str,
+    status: str,
+    rows_processed: int = 0,
+    rows_failed: int = 0,
+) -> int:
+    """Insert a completed batch entry into audit.batch. Returns batch_id."""
+    now = datetime.now(timezone.utc)
     with get_cursor(commit=True) as cur:
         cur.execute(
             """
-            INSERT INTO audit_etl_job_log (job_audit_id, log_level, log_message, stack_trace, log_time)
-            VALUES (%s, %s, %s, %s, %s)
+            INSERT INTO audit.batch
+                (job_run_id, delta_to_pull, batch_status,
+                 rows_processed, rows_failed, start_time, end_time)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            RETURNING batch_id
             """,
-            (job_audit_id, level, message, stack_trace, datetime.now(timezone.utc))
+            (job_run_id, delta_to_pull, status, rows_processed, rows_failed, now, now),
+        )
+        return cur.fetchone()["batch_id"]
+
+
+# ── audit.log ────────────────────────────────────────────────
+
+def log(
+    job_run_id: int,
+    message: str,
+    level: str = "INFO",
+    step_run_id: int | None = None,
+    stack_trace: str | None = None,
+) -> None:
+    """Write a log line to audit.log. level: INFO | WARN | ERROR | DEBUG"""
+    with get_cursor(commit=True) as cur:
+        cur.execute(
+            """
+            INSERT INTO audit.log
+                (job_run_id, step_run_id, log_level, log_message, stack_trace, log_time)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            """,
+            (job_run_id, step_run_id, level, message, stack_trace, datetime.now(timezone.utc)),
         )
     print(f"[{level}] {message}")
 
 
-# ── Error recording ──────────────────────────────────────────
+# ── audit.error ──────────────────────────────────────────────
 
 def log_error(
-    job_audit_id: int,
+    job_run_id: int,
     error_type: str,
     error_message: str,
-    error_detail: str = None,
-    error_code: str = None
+    step_run_id: int | None = None,
+    error_detail: str | None = None,
 ) -> None:
-    """
-    Write a structured error to AUDIT_ETL_ERROR.
-    error_type: EXTRACTION | TRANSFORMATION | LOAD | NETWORK | SCHEMA | PERMISSION
-    """
+    """Write a structured error to audit.error."""
     with get_cursor(commit=True) as cur:
         cur.execute(
             """
-            INSERT INTO audit_etl_error
-                (job_audit_id, error_type, error_message, error_detail, error_code, is_resolved)
+            INSERT INTO audit.error
+                (job_run_id, step_run_id, error_type, error_message, error_detail, is_resolved)
             VALUES (%s, %s, %s, %s, %s, FALSE)
             """,
-            (job_audit_id, error_type, error_message, error_detail, error_code)
+            (job_run_id, step_run_id, error_type, error_message, error_detail),
         )
-    print(f"[ERROR] {error_type}: {error_message}")
+    print(f"[ERROR] {error_type}: {error_message[:120]}")
 
 
-# ── Schedule update ──────────────────────────────────────────
+# ── config.job.last_run ──────────────────────────────────────
 
-def update_schedule_last_run(job_id: int) -> None:
-    """Stamp LAST_RUN on the job's schedule record after each execution."""
+def stamp_last_run(job_id: int) -> None:
+    """Update config.job.last_run after each execution."""
     with get_cursor(commit=True) as cur:
         cur.execute(
-            """
-            UPDATE etl_job_schedule
-               SET last_run = %s
-             WHERE job_id    = %s
-               AND is_active = 'Y'
-            """,
-            (datetime.now(timezone.utc), job_id)
+            "UPDATE config.job SET last_run = %s WHERE job_id = %s",
+            (datetime.now(timezone.utc), job_id),
         )
-    print(f"[Audit] Schedule last_run updated for JOB_ID={job_id}")
+    print(f"[AUDIT] last_run stamped for job_id={job_id}")

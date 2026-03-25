@@ -1,0 +1,61 @@
+# ============================================================
+# .gitignore — di_accelerator
+# ============================================================
+
+# ── Python ───────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+*.egg
+
+# ── Virtual environment ───────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ── Secrets & credentials  (NEVER commit these) ──────────────
+.env
+.env.*
+*.pem
+*.key
+secrets.json
+
+# ── Generated / runtime data ─────────────────────────────────
+# Raw, silver, gold layers are written at runtime
+data/raw/
+data/silver/
+data/gold/
+
+# Parquet files wherever they land
+*.parquet
+
+# ── SQL backup files ──────────────────────────────────────────
+*.bck
+*.bck2
+*.sql.bak
+
+# ── macOS ─────────────────────────────────────────────────────
+.DS_Store
+**/.DS_Store
+.AppleDouble
+.LSOverride
+
+# ── IDE — JetBrains / PyCharm ────────────────────────────────
+.idea/
+
+# ── IDE — VS Code (keep workspace settings if you want) ───────
+# .vscode/
+
+# ── Generated HTML / ERD artefacts ───────────────────────────
+ERD.html
+ERD_files/
+
+# ── Logs & temp files ─────────────────────────────────────────
+*.log
+*.tmp
+*.swp

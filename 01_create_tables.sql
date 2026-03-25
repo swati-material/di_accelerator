@@ -1,134 +1,164 @@
 -- ============================================================
--- METADATA STORE - DDL Script
--- DI Accelerator POC
--- Creates all CONFIG, AUDIT, and SCHEDULE tables
+-- METADATA STORE — Full DDL
+-- Schema separation: config.* and audit.*
+-- Run order: schemas → config tables → audit tables → indexes
 -- ============================================================
-
+ 
 -- ============================================================
--- CONFIG TABLES
+-- CREATE SCHEMAS
 -- ============================================================
-
--- 1. ETL_JOB_CONFIG: Master job registry
-CREATE TABLE IF NOT EXISTS ETL_JOB_CONFIG (
-    JOB_ID          SERIAL PRIMARY KEY,
-    CLIENT_ID       VARCHAR(100),
-    JOB_NAME        VARCHAR(255) NOT NULL,
-    JOB_DESCRIPTION TEXT,
-    SOURCE_SYSTEM   VARCHAR(100),           -- e.g., ProviderA_CSV, GoogleAds
-    SECRET_SCOPE    VARCHAR(255),           -- secret manager scope reference
-    SECRET_KEY_NAME VARCHAR(255),           -- secret key identifier
-    STATUS          VARCHAR(20)  DEFAULT 'ACTIVE',   -- ACTIVE / INACTIVE
-    IS_ACTIVE       CHAR(1)      DEFAULT 'Y',
-    CREATED_BY      VARCHAR(100),
-    CREATED_DATE    TIMESTAMP    DEFAULT NOW(),
-    UPDATED_BY      VARCHAR(100),
-    UPDATED_DATE    TIMESTAMP,
-    VERSION         INT          DEFAULT 1
+DROP SCHEMA IF EXISTS config CASCADE;
+DROP SCHEMA IF EXISTS audit  CASCADE;
+CREATE SCHEMA IF NOT EXISTS config;
+CREATE SCHEMA IF NOT EXISTS audit;
+ 
+-- ============================================================
+-- CONFIG SCHEMA — setup tables (written once, rarely changed)
+-- ============================================================
+ 
+-- 1. config.job — master job registry (schedule merged in)
+CREATE TABLE IF NOT EXISTS config.job (
+    job_id          SERIAL          PRIMARY KEY,
+    client_id       VARCHAR(100),
+    job_name        VARCHAR(255)    NOT NULL,
+    job_description TEXT,
+    source_system   VARCHAR(100),
+    secret_scope    VARCHAR(255),
+    secret_key_name VARCHAR(255),
+    cron_expression VARCHAR(100),                       -- e.g. 0 2 * * *
+    frequency       VARCHAR(50),                        -- Daily / Hourly / Weekly
+    timezone        VARCHAR(100)    DEFAULT 'UTC',
+    schedule_type   VARCHAR(50),                        -- Manual / Scheduled / Dependency
+    next_run        TIMESTAMP,
+    last_run        TIMESTAMP,
+    is_active       BOOLEAN         DEFAULT TRUE,
+    created_by      VARCHAR(100),
+    created_date    TIMESTAMP       DEFAULT NOW(),
+    updated_by      VARCHAR(100),
+    updated_date    TIMESTAMP
 );
-
--- 2. ETL_PARAM_CONFIG: Job execution parameters
-CREATE TABLE IF NOT EXISTS ETL_PARAM_CONFIG (
-    PARAM_ID         SERIAL PRIMARY KEY,
-    JOB_ID           INT REFERENCES ETL_JOB_CONFIG(JOB_ID) ON DELETE CASCADE,
-    RESOURCE_GROUP   VARCHAR(255),          -- e.g., customer_master_a, Campaign
-    PARAM_NAME       VARCHAR(255),
-    FIELDS           TEXT,                  -- comma-separated field list
-    FILTERS          TEXT,                  -- optional JSON filters
-    DELTA_TO_PULL    VARCHAR(100),          -- e.g., Current_Date -1, full_refresh
-    PARAM_TYPE       VARCHAR(50),           -- ETL / DLT / TRANSFORM
-    MASKED_FIELDS    TEXT,                  -- sensitive fields to mask
-    SEQUENCE         INT DEFAULT 1,         -- execution order
-    VALIDATION_RULES TEXT,                  -- optional JSON validation rules
-    DEPENDENCIES     TEXT,                  -- references other PARAM_IDs
-    DESCRIPTION      TEXT,
-    IS_ACTIVE        CHAR(1) DEFAULT 'Y',
-    CREATED_BY       VARCHAR(100),
-    CREATED_DATE     TIMESTAMP DEFAULT NOW(),
-    UPDATED_BY       VARCHAR(100),
-    UPDATED_DATE     TIMESTAMP
+ 
+-- 3. config.job_step — step definitions per job (step 1 to step N)
+CREATE TABLE IF NOT EXISTS config.job_step (
+    step_id         SERIAL          PRIMARY KEY,
+    job_id          INT             NOT NULL REFERENCES config.job(job_id) ON DELETE CASCADE,
+    step_name       VARCHAR(255)    NOT NULL,
+    step_type       VARCHAR(50)     NOT NULL,           -- READ_CSV / REGISTER_VIEW / TRANSFORM_SQL / WRITE_PARQUET
+    step_action     TEXT,                       -- e.g. Points to SQL file, python script, stored code etc.
+    source_path     VARCHAR(500),
+    target_path     VARCHAR(500),
+    sequence        INT             NOT NULL,
+    is_active       boolean         DEFAULT TRUE,
+    created_by      VARCHAR(100),
+    created_date    TIMESTAMP       DEFAULT NOW(),
+    updated_by      VARCHAR(100),
+    updated_date    TIMESTAMP
 );
-
--- ============================================================
--- SCHEDULE TABLES
--- ============================================================
-
--- 3. ETL_JOB_SCHEDULE: When to run each job
-CREATE TABLE IF NOT EXISTS ETL_JOB_SCHEDULE (
-    SCHEDULE_ID     SERIAL PRIMARY KEY,
-    JOB_ID          INT REFERENCES ETL_JOB_CONFIG(JOB_ID) ON DELETE CASCADE,
-    CRON_EXPRESSION VARCHAR(100),           -- e.g., 0 2 * * *
-    FREQUENCY       VARCHAR(50),            -- Daily / Hourly / Weekly
-    TIMEZONE        VARCHAR(100) DEFAULT 'UTC',
-    NEXT_RUN        TIMESTAMP,
-    LAST_RUN        TIMESTAMP,
-    SCHEDULE_TYPE   VARCHAR(50),            -- Manual / Scheduled / Dependency
-    IS_ACTIVE       CHAR(1) DEFAULT 'Y',
-    CREATED_BY      VARCHAR(100),
-    CREATED_DATE    TIMESTAMP DEFAULT NOW()
+ 
+-- 4. config.step_param — parameters substituted into each step at runtime
+CREATE TABLE IF NOT EXISTS config.step_param (
+    param_id            SERIAL          PRIMARY KEY,
+    step_id             INT             NOT NULL REFERENCES config.job_step(step_id) ON DELETE CASCADE,
+    param_name          VARCHAR(255)    NOT NULL,
+    param_value         TEXT,
+    param_data_type TEXT CHECK (param_data_type IN ('STRING', 'INT', 'JSON', 'SQL')),                     -- e.g. STRING / INT / JSON / SQL
+    resource_group      VARCHAR(255),
+    fields              TEXT,                           -- comma-separated field list
+    filters             TEXT,                           -- optional JSON filters
+    delta_to_pull       VARCHAR(100),                   -- e.g. Current_Date -1 / full_refresh
+    masked_fields       TEXT,
+    validation_rules    TEXT,                           -- optional JSON
+    is_active           boolean         DEFAULT TRUE,
+    created_by          VARCHAR(100),
+    created_date        TIMESTAMP       DEFAULT NOW(),
+    updated_by          VARCHAR(100),
+    updated_date        TIMESTAMP
 );
-
+ 
 -- ============================================================
--- AUDIT TABLES
+-- AUDIT SCHEMA — runtime tables (written every execution)
 -- ============================================================
-
--- 4. AUDIT_ETL_JOB: Top-level job run record
-CREATE TABLE IF NOT EXISTS AUDIT_ETL_JOB (
-    JOB_AUDIT_ID     SERIAL PRIMARY KEY,
-    JOB_ID           INT REFERENCES ETL_JOB_CONFIG(JOB_ID),
-    RUN_STATUS       VARCHAR(20),           -- SUCCESS / FAILED / PARTIAL
-    START_TIME       TIMESTAMP,
-    END_TIME         TIMESTAMP,
-    TRIGGERED_BY     VARCHAR(50),           -- Manual / Schedule / Dependency
-    ROWS_PROCESSED   BIGINT  DEFAULT 0,
-    ERROR_COUNT      INT     DEFAULT 0,
-    RUNTIME_SECONDS  INT
+ 
+-- 5. audit.job_run — one row per job execution
+CREATE TABLE IF NOT EXISTS audit.job_run (
+    job_run_id      SERIAL          PRIMARY KEY,
+    job_id          INT             NOT NULL REFERENCES config.job(job_id),
+    run_status      VARCHAR(20),                        -- RUNNING / SUCCESS / FAILED / PARTIAL
+    start_time      TIMESTAMP,
+    end_time        TIMESTAMP,
+    triggered_by    VARCHAR(50),                        -- Manual / Schedule / Dependency
+    rows_processed  BIGINT          DEFAULT 0,
+    error_count     INT             DEFAULT 0,
+    runtime_seconds INT
 );
-
--- 5. AUDIT_ETL_BATCH: Batch-level detail
-CREATE TABLE IF NOT EXISTS AUDIT_ETL_BATCH (
-    BATCH_ID         SERIAL PRIMARY KEY,
-    JOB_AUDIT_ID     INT REFERENCES AUDIT_ETL_JOB(JOB_AUDIT_ID),
-    DELTA_TO_PULL    VARCHAR(100),
-    BATCH_STATUS     VARCHAR(20),           -- SUCCESS / FAILED
-    START_TIME       TIMESTAMP,
-    END_TIME         TIMESTAMP,
-    ROWS_PROCESSED   BIGINT DEFAULT 0,
-    ROWS_FAILED      BIGINT DEFAULT 0,
-    RUNTIME_SECONDS  INT
+ 
+-- 6. audit.step_run — one row per step per execution
+CREATE TABLE IF NOT EXISTS audit.step_run (
+    step_run_id     SERIAL          PRIMARY KEY,
+    job_run_id      INT             NOT NULL REFERENCES audit.job_run(job_run_id),
+    step_id         INT             NOT NULL REFERENCES config.job_step(step_id),
+    step_status     VARCHAR(20),                        -- RUNNING / SUCCESS / FAILED
+    start_time      TIMESTAMP,
+    end_time        TIMESTAMP,
+    rows_in         BIGINT          DEFAULT 0,
+    rows_out        BIGINT          DEFAULT 0,
+    runtime_seconds INT
 );
-
--- 6. AUDIT_ETL_JOB_LOG: Free-text log lines
-CREATE TABLE IF NOT EXISTS AUDIT_ETL_JOB_LOG (
-    LOG_ID           SERIAL PRIMARY KEY,
-    JOB_AUDIT_ID     INT REFERENCES AUDIT_ETL_JOB(JOB_AUDIT_ID),
-    LOG_LEVEL        VARCHAR(10),           -- INFO / WARN / ERROR / DEBUG
-    LOG_MESSAGE      TEXT,
-    STACK_TRACE      TEXT,
-    LOG_TIME         TIMESTAMP DEFAULT NOW()
+ 
+-- 7. audit.batch — delta window detail per job run
+CREATE TABLE IF NOT EXISTS audit.batch (
+    batch_id        SERIAL          PRIMARY KEY,
+    job_run_id      INT             NOT NULL REFERENCES audit.job_run(job_run_id),
+    delta_to_pull   VARCHAR(100),
+    batch_status    VARCHAR(20),                        -- SUCCESS / FAILED
+    rows_processed  BIGINT          DEFAULT 0,
+    rows_failed     BIGINT          DEFAULT 0,
+    start_time      TIMESTAMP,
+    end_time        TIMESTAMP,
+    runtime_seconds INT
 );
-
--- 7. AUDIT_ETL_ERROR: Structured error records
-CREATE TABLE IF NOT EXISTS AUDIT_ETL_ERROR (
-    ERROR_ID         SERIAL PRIMARY KEY,
-    JOB_AUDIT_ID     INT REFERENCES AUDIT_ETL_JOB(JOB_AUDIT_ID),
-    ERROR_TYPE       VARCHAR(50),           -- EXTRACTION / TRANSFORMATION / LOAD / NETWORK / SCHEMA / PERMISSION
-    ERROR_MESSAGE    TEXT,
-    ERROR_DETAIL     TEXT,
-    IS_RESOLVED      BOOLEAN DEFAULT FALSE,
-    RESOLVED_DATE    TIMESTAMP,
-    RESOLVED_BY      VARCHAR(100),
-    ERROR_CODE       VARCHAR(50)
+ 
+-- 8. audit.log — free-text log lines (job and step level)
+CREATE TABLE IF NOT EXISTS audit.log (
+    log_id          SERIAL          PRIMARY KEY,
+    job_run_id      INT             NOT NULL REFERENCES audit.job_run(job_run_id),
+    step_run_id     INT             REFERENCES audit.step_run(step_run_id),  -- nullable: job-level logs have no step
+    log_level       VARCHAR(10)     NOT NULL,           -- INFO / WARN / ERROR / DEBUG
+    log_message     TEXT,
+    stack_trace     TEXT,
+    log_time        TIMESTAMP       DEFAULT NOW()
 );
-
+ 
+-- 9. audit.error — structured error records (job and step level)
+CREATE TABLE IF NOT EXISTS audit.error (
+    error_id        SERIAL          PRIMARY KEY,
+    job_run_id      INT             NOT NULL REFERENCES audit.job_run(job_run_id),
+    step_run_id     INT             REFERENCES audit.step_run(step_run_id),  -- nullable: job-level errors
+    error_type      VARCHAR(50),                        -- EXTRACTION / TRANSFORMATION / LOAD / NETWORK / SCHEMA / PERMISSION
+    error_message   TEXT,
+    error_detail    TEXT,
+    error_code      VARCHAR(50),
+    is_resolved     BOOLEAN         DEFAULT FALSE,
+    resolved_date   TIMESTAMP,
+    resolved_by     VARCHAR(100)
+);
+ 
 -- ============================================================
--- INDEXES for performance
+-- INDEXES
 -- ============================================================
-
-CREATE INDEX IF NOT EXISTS idx_etl_param_job_id    ON ETL_PARAM_CONFIG(JOB_ID);
-CREATE INDEX IF NOT EXISTS idx_schedule_job_id     ON ETL_JOB_SCHEDULE(JOB_ID);
-CREATE INDEX IF NOT EXISTS idx_audit_job_job_id    ON AUDIT_ETL_JOB(JOB_ID);
-CREATE INDEX IF NOT EXISTS idx_audit_batch_audit   ON AUDIT_ETL_BATCH(JOB_AUDIT_ID);
-CREATE INDEX IF NOT EXISTS idx_audit_log_audit     ON AUDIT_ETL_JOB_LOG(JOB_AUDIT_ID);
-CREATE INDEX IF NOT EXISTS idx_audit_error_audit   ON AUDIT_ETL_ERROR(JOB_AUDIT_ID);
-
-SELECT 'All Metadata Store tables created successfully.' AS status;
+ 
+-- config schema
+CREATE INDEX IF NOT EXISTS idx_job_step_job_id        ON config.job_step(job_id);
+CREATE INDEX IF NOT EXISTS idx_step_param_step_id     ON config.step_param(step_id);
+ 
+-- audit schema
+CREATE INDEX IF NOT EXISTS idx_job_run_job_id         ON audit.job_run(job_id);
+CREATE INDEX IF NOT EXISTS idx_job_run_status         ON audit.job_run(run_status);
+CREATE INDEX IF NOT EXISTS idx_step_run_job_run_id    ON audit.step_run(job_run_id);
+CREATE INDEX IF NOT EXISTS idx_step_run_step_id       ON audit.step_run(step_id);
+CREATE INDEX IF NOT EXISTS idx_batch_job_run_id       ON audit.batch(job_run_id);
+CREATE INDEX IF NOT EXISTS idx_log_job_run_id         ON audit.log(job_run_id);
+CREATE INDEX IF NOT EXISTS idx_log_step_run_id        ON audit.log(step_run_id);
+CREATE INDEX IF NOT EXISTS idx_error_job_run_id       ON audit.error(job_run_id);
+CREATE INDEX IF NOT EXISTS idx_error_step_run_id      ON audit.error(step_run_id);
+ 
