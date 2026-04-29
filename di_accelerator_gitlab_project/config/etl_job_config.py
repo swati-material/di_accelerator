@@ -1,7 +1,7 @@
 import os
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SAMPLE_DATA_DIR = os.path.join(BASE_DIR, "sample_data")
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+SAMPLE_DATA_DIR = os.path.join(BASE_DIR, "sample_data", "sample_data")
 OUTPUT_DIR = os.path.join(BASE_DIR, "output")
 
 LOCAL_JOB_CONFIGS = {

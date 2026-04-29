@@ -59,3 +59,4 @@ ERD_files/
 *.log
 *.tmp
 *.swp
+output/

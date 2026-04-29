@@ -1,5 +1,18 @@
-import argparse
 import os
+
+
+os.environ.setdefault(
+    "JAVA_TOOL_OPTIONS",
+    "--add-opens=java.base/jdk.internal.ref=ALL-UNNAMED "
+    "--add-opens=java.base/java.nio=ALL-UNNAMED "
+    "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED "
+    "--add-opens=java.base/java.lang=ALL-UNNAMED "
+    "--add-opens=java.base/java.util=ALL-UNNAMED "
+    "--add-opens=java.base/java.lang.invoke=ALL-UNNAMED"
+)
+
+
+import argparse
 import sys
 from datetime import datetime
 
